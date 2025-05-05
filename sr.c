@@ -4,6 +4,24 @@
 #include "emulator.h"
 #include "sr.h"
 
+/* This version modifies the GBN framework to implement SR protocol*/
+/* ******************************************************************
+   Go Back N protocol.  Adapted from J.F.Kurose
+   ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: VERSION 1.2
+
+   Network properties:
+   - one way network delay averages five time units (longer if there
+   are other messages in the channel for GBN), but can be larger
+   - packets can be corrupted (either the header or the data portion)
+   or lost, according to user-defined probabilities
+   - packets will be delivered in the order in which they were sent
+   (although some can be lost).
+
+   Modifications:
+   - removed bidirectional GBN code and other code not used by prac.
+   - fixed C style to adhere to current programming style
+   - added GBN implementation
+**********************************************************************/
 
 #define RTT  16.0       /* round trip time.  MUST BE SET TO 16.0 when submitting assignment */
 #define WINDOWSIZE 6    /* the maximum number of buffered unacked packet
@@ -95,9 +113,6 @@ void A_output(struct msg message)
 */
 void A_input(struct pkt packet)
 {
-  int ackcount = 0;
-  int i;
-
   /* if received ACK is not corrupted */
   if (!IsCorrupted(packet)) {
     if (TRACE > 0)
@@ -108,13 +123,13 @@ void A_input(struct pkt packet)
       if (TRACE > 0)
         printf("----A: ACK %d is not a duplicate\n",packet.acknum);
       new_ACKs++;
-      acked[packet.acknum] = true;
+      acked[packet.acknum] = true; /* flag this ACK as received */
         
 
-      /*It only slides the window if that packet is the first one still waiting for a response*/
+      /* It only slides the window if that packet is the first one still waiting for a response */
       if (packet.acknum == buffer[windowfirst].seqnum)
       {
-        /*Pick the next one still waiting for an ACK and start timing it*/
+        /* Pick the next one still waiting for an ACK and start timing it */
         while (windowcount > 0 && acked[buffer[windowfirst].seqnum])
         {
           windowfirst = (windowfirst + 1) % WINDOWSIZE;
@@ -144,6 +159,9 @@ void A_timerinterrupt(void)
     printf("----A: time out,resend packets!\n");
 
   /*Only resend the earliest unacknowledged packet in the sending window — the one pointed to by buffer[windowfirst]*/
+  if (TRACE > 0)
+    printf ("---A: resending packet %d\n", buffer[windowfirst].seqnum);
+
   tolayer3(A,buffer[windowfirst]);
   packets_resent++;
   if (windowcount > 0)
@@ -172,6 +190,8 @@ void A_init(void)
 
 static int expectedseqnum; /* the sequence number expected next by the receiver */
 static int B_nextseqnum;   /* the sequence number for the next packets sent by B */
+static struct pkt recvpkt[SEQSPACE]; /* receiver buffer */
+static bool received[SEQSPACE]; /* records which packets B has successfully received */
 
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
@@ -180,44 +200,40 @@ void B_input(struct pkt packet)
   struct pkt sendpkt;
   int i;
 
-  /* if not corrupted and received packet is in order */
-  if  ( (!IsCorrupted(packet))  && (packet.seqnum == expectedseqnum) ) {
+  /* if not corrupted */
+  if (!IsCorrupted(packet)) {
     if (TRACE > 0)
       printf("----B: packet %d is correctly received, send ACK!\n",packet.seqnum);
     packets_received++;
 
     /* deliver to receiving application */
-    tolayer5(B, packet.payload);
+
+    if (received[packet.seqnum] == false){
+      received[packet.seqnum] = true;
+      for ( i=0; i<20 ; i++ )
+        recvpkt[packet.seqnum].payload[i] = packet.payload[i];
+    } 
+    /* Deliver packets to layer5 in-order as long as they are available */
+    while (received[expectedseqnum] == true){
+      tolayer5(B, packet.payload);
+      received[expectedseqnum] = false;
+      expectedseqnum = (expectedseqnum + 1) % SEQSPACE;
+    }
 
     /* send an ACK for the received packet */
-    sendpkt.acknum = expectedseqnum;
+    sendpkt.acknum = packet.seqnum;
+    sendpkt.seqnum = NOTINUSE; /* ACK */
 
-    /* update state variables */
-    expectedseqnum = (expectedseqnum + 1) % SEQSPACE;
+    /* we don't have any data to send.  fill payload with 0's */
+    for ( i=0; i<20 ; i++ )
+      sendpkt.payload[i] = '0';
+
+    /* computer checksum */
+    sendpkt.checksum = ComputeChecksum(sendpkt);
+
+    /* send out packet */
+    tolayer3 (B, sendpkt);
   }
-  else {
-    /* packet is corrupted or out of order resend last ACK */
-    if (TRACE > 0)
-      printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
-    if (expectedseqnum == 0)
-      sendpkt.acknum = SEQSPACE - 1;
-    else
-      sendpkt.acknum = expectedseqnum - 1;
-  }
-
-  /* create packet */
-  sendpkt.seqnum = B_nextseqnum;
-  B_nextseqnum = (B_nextseqnum + 1) % 2;
-
-  /* we don't have any data to send.  fill payload with 0's */
-  for ( i=0; i<20 ; i++ )
-    sendpkt.payload[i] = '0';
-
-  /* computer checksum */
-  sendpkt.checksum = ComputeChecksum(sendpkt);
-
-  /* send out packet */
-  tolayer3 (B, sendpkt);
 }
 
 /* the following routine will be called once (only) before any other */
