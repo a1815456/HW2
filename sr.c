@@ -215,7 +215,7 @@ void B_input(struct pkt packet)
     } 
     /* Deliver packets to layer5 in-order as long as they are available */
     while (received[expectedseqnum] == true){
-      tolayer5(B, packet.payload);
+      tolayer5(B, recvpkt[expectedseqnum].payload);
       received[expectedseqnum] = false;
       expectedseqnum = (expectedseqnum + 1) % SEQSPACE;
     }
